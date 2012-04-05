@@ -28,6 +28,8 @@
 #include <arpa/inet.h>
 #include <netinet/ether.h>
 #include <ctype.h>
+#include <stdlib.h>
+#include <unistd.h>
 
 #include <glib/gi18n.h>
 #include <gtk/gtk.h>
@@ -930,7 +932,9 @@ notify_active_ap_changed_cb (NMDeviceWifi *device,
 
 	connection = applet_get_exported_connection_for_device (NM_DEVICE (device), applet);
 	if (!connection)
+	{
 		return;
+	}
 
 	s_wireless = nm_connection_get_setting_wireless (NM_CONNECTION (connection));
 	if (!s_wireless)
@@ -1252,24 +1256,46 @@ wireless_device_state_changed (NMDevice *device,
                                NMApplet *applet)
 {
 	NMAccessPoint *new = NULL;
-	char *msg;
-	char *esc_ssid = NULL;
+	char *msg = NULL;
+	NMRemoteConnection *connection = NULL;
+	const char *connection_id;
+	char *cmdline = NULL;
+
+	// Get connection info before updating device, to get it also when disconnected
+	connection = applet_get_exported_connection_for_device (NM_DEVICE (device), applet);
+	if (connection)
+		connection_id = nm_connection_get_id(&connection->parent);
 
 	new = update_active_ap (device, new_state, applet);
 
-	if (new_state == NM_DEVICE_STATE_DISCONNECTED)
-		queue_avail_access_point_notification (device);
+	// Notify when connected
+	if (connection_id && (new_state == NM_DEVICE_STATE_ACTIVATED))
+	{
+		msg = g_strdup_printf (_("You are now connected to the wireless network %s"), connection_id);
+		applet_do_notify_with_pref (applet, _("Connection Established"),
+									msg, "nm-device-wireless",
+									PREF_DISABLE_CONNECTED_NOTIFICATIONS);
+	}
 
-	if (new_state != NM_DEVICE_STATE_ACTIVATED)
-		return;
+	// Get user scripts (and in the future possibly call global event handlers, also for libnotify)
+	switch (new_state)
+	{
+	case NM_DEVICE_STATE_ACTIVATED:
+		cmdline = g_strdup_printf("~/.gnome2/nm-applet/network-up '%s'", connection_id);
+		break;
+	case NM_DEVICE_STATE_DISCONNECTED:
+		cmdline = g_strdup_printf("~/.gnome2/nm-applet/network-down '%s'", connection_id);
+		break;
+	default:
+		break;
+	}
 
-	esc_ssid = get_ssid_utf8 (new);
-	msg = g_strdup_printf (_("You are now connected to the wireless network '%s'."), esc_ssid);
-	applet_do_notify_with_pref (applet, _("Connection Established"),
-	                            msg, "nm-device-wireless",
-	                            PREF_DISABLE_CONNECTED_NOTIFICATIONS);
-	g_free (msg);
-	g_free (esc_ssid);
+	// If user script configured, run it
+	if (cmdline)
+		system(cmdline);
+
+	if (cmdline) g_free (cmdline);
+	if (msg) g_free (msg);
 }
 
 static GdkPixbuf *
@@ -1386,6 +1412,7 @@ activate_existing_cb (NMClient *client,
 		utils_show_error_dialog (_("Connection failure"), text, err_text, FALSE, NULL);
 		g_free (err_text);
 	}
+
 	applet_schedule_update_icon (NM_APPLET (user_data));
 }
 
