@@ -38,6 +38,7 @@
 #include <nm-access-point.h>
 #include <nm-setting-connection.h>
 #include <nm-setting-wireless.h>
+#include <nm-setting-actions.h>
 #include <nm-device-wifi.h>
 #include <nm-setting-8021x.h>
 #include <nm-utils.h>
@@ -1258,13 +1259,19 @@ wireless_device_state_changed (NMDevice *device,
 	NMAccessPoint *new = NULL;
 	char *msg = NULL;
 	NMRemoteConnection *connection = NULL;
+	NMSettingActions *settings = NULL;
 	const char *connection_id;
+	const char *script = NULL;
 	char *cmdline = NULL;
 
 	// Get connection info before updating device, to get it also when disconnected
 	connection = applet_get_exported_connection_for_device (NM_DEVICE (device), applet);
 	if (connection)
+	{
 		connection_id = nm_connection_get_id(&connection->parent);
+
+		settings = nm_connection_get_setting_actions(&connection->parent);
+	}
 
 	new = update_active_ap (device, new_state, applet);
 
@@ -1275,27 +1282,33 @@ wireless_device_state_changed (NMDevice *device,
 		applet_do_notify_with_pref (applet, _("Connection Established"),
 									msg, "nm-device-wireless",
 									PREF_DISABLE_CONNECTED_NOTIFICATIONS);
+		g_free (msg);
 	}
+
+	if (!settings)
+		return;
 
 	// Get user scripts (and in the future possibly call global event handlers, also for libnotify)
 	switch (new_state)
 	{
 	case NM_DEVICE_STATE_ACTIVATED:
-		cmdline = g_strdup_printf("~/.gnome2/nm-applet/network-up '%s'", connection_id);
+		script = nm_setting_actions_get_connect_script(settings);
 		break;
 	case NM_DEVICE_STATE_DISCONNECTED:
-		cmdline = g_strdup_printf("~/.gnome2/nm-applet/network-down '%s'", connection_id);
+		script = nm_setting_actions_get_disconnect_script(settings);
 		break;
 	default:
 		break;
 	}
 
 	// If user script configured, run it
-	if (cmdline)
+	if (script && strlen(script))
+	{
+		cmdline = g_strdup_printf("%s '%s'", script, connection_id);
 		system(cmdline);
 
-	if (cmdline) g_free (cmdline);
-	if (msg) g_free (msg);
+		g_free (cmdline);
+	}
 }
 
 static GdkPixbuf *
