@@ -46,6 +46,8 @@ nm_connection_editor_SOURCES = \
 	page-ppp.c \
 	page-vpn.h \
 	page-vpn.c \
+	page-actions.h \
+	page-actions.c \
 	vpn-helpers.h \
 	vpn-helpers.c \
 	ip4-routes-dialog.h \
@@ -82,6 +84,7 @@ ui_DATA = \
 	ce-page-dsl.ui \
 	ce-page-mobile.ui \
 	ce-page-ppp.ui \
+	ce-page-actions.ui \
 	ce-ppp-auth-methods.ui \
 	ce-vpn-wizard.ui
 
