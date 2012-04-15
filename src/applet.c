@@ -3689,6 +3689,8 @@ mount_added_cb (GVolumeMonitor *volume_monitor,
 		NMSettingResources *settings =
 				nm_connection_get_setting_resources(connection);
 
+		// FIXME: Only list supported connections (e.g. with known secret settings' names)
+
 	    // Filter out if this mount is already configured for this connection
 		if (NM_IS_SETTING_RESOURCES(settings))
 		{
@@ -3720,13 +3722,16 @@ mount_added_cb (GVolumeMonitor *volume_monitor,
     // Display notification window & ask whether to always mount this share
     // Following based on applet_do_notify, but enhanced for more than one action
 	applet_clear_notify (applet);
+	tmp = g_mount_get_name(mount);
 	if (g_slist_length(active_networks) == 1)
 		escaped = utils_escape_notify_message (g_strdup_printf(
-				_("Do you want to mount %s automatically when connected to %s?"),
-				uri, nm_connection_get_id((NMConnection *) g_slist_nth_data(active_networks, 0))));
+				_("Do you want to mount\n%s\nautomatically when connected to\n%s?"),
+				tmp,
+				nm_connection_get_id((NMConnection *) g_slist_nth_data(active_networks, 0))));
 	else
 		escaped = utils_escape_notify_message (g_strdup_printf(
-				_("Do you want to mount %s automatically?"), uri));
+				_("Do you want to mount\n%s\nautomatically?"),
+				tmp));
 	notify = notify_notification_new (_("Mount automatically?"),
 	                                  escaped,
 	                                  "nm-device-wired"
@@ -3735,6 +3740,7 @@ mount_added_cb (GVolumeMonitor *volume_monitor,
 #else
 	                                  , NULL);
 #endif
+	g_free (tmp);
 	g_free (escaped);
 	applet->notification = notify;
 
@@ -3754,8 +3760,8 @@ mount_added_cb (GVolumeMonitor *volume_monitor,
 				notify,
 				uri,
 				(g_slist_length(active_networks) == 1) ?
-						"Connect automatically" :
-						g_strdup_printf ("On %s", nm_connection_get_id(connection)),
+						_("Mount automatically") :
+						g_strdup_printf (_("For %s"), nm_connection_get_id(connection)),
 				autoconnect_cb,
 				connection,
 				NULL);
@@ -3875,11 +3881,11 @@ mount_removed_cb (GVolumeMonitor *volume_monitor,
 
 	if (g_slist_length(active_networks) == 1)
 		escaped = utils_escape_notify_message (g_strdup_printf(
-				_("You just unmounted %s, which is auto-mounted when you connect to %s."),
+				_("You just unmounted\n%s\nDo you want to remove auto-mounting for\n%s?"),
 				uri, nm_connection_get_id((NMConnection *) g_slist_nth_data(active_networks, 0))));
 	else
 		escaped = utils_escape_notify_message (g_strdup_printf(
-				_("You just unmounted %s, which is auto-mounted. Do you want to remove auto-mounting?"),
+				_("You just unmounted\n%s\nDo you want to remove auto-mounting?"),
 				uri));
 	notify = notify_notification_new (_("Also remove auto-mounting?"),
 	                                  escaped,
@@ -3908,8 +3914,8 @@ mount_removed_cb (GVolumeMonitor *volume_monitor,
 				notify,
 				uri,
 				(g_slist_length(active_networks) == 1) ?
-						"Remove auto-mount" :
-						g_strdup_printf ("On %s", nm_connection_get_id(connection)),
+						_("Remove auto-mount") :
+						g_strdup_printf (_("For %s"), nm_connection_get_id(connection)),
 				remove_autoconnect_cb,
 				connection,
 				NULL);

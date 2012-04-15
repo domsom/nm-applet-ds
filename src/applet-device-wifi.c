@@ -1332,11 +1332,8 @@ wireless_device_state_changed (NMDevice *device,
 	NMAccessPoint *new = NULL;
 	char *msg = NULL;
 	NMRemoteConnection *connection = NULL;
-//	NMSettingActions *settings = NULL;
 	NMSettingResources *settings_resources = NULL;
 	const char *connection_id = NULL;
-	const char *script = NULL;
-	char *cmdline = NULL;
 	int i, *unmount_count = NULL;
 
 	// Get connection info before updating device, to get it also when disconnected
@@ -1349,7 +1346,6 @@ wireless_device_state_changed (NMDevice *device,
 		connection_id = nm_connection_get_id(&connection->parent);
 		msg = g_strdup_printf (_("You are now connected to %s"), connection_id);
 
-//		settings = nm_connection_get_setting_actions(&connection->parent);
 		settings_resources = nm_connection_get_setting_resources(&connection->parent);
 	}
 	else
@@ -1371,13 +1367,9 @@ wireless_device_state_changed (NMDevice *device,
 	if (!NM_IS_SETTING_RESOURCES(settings_resources))
 		return;
 
-	// Get user scripts (and in the future possibly call global event handlers, also for libnotify)
-	// FIXME: Trigger a global signal for resource connection after discussing on mailing list
 	switch (new_state)
 	{
 	case NM_DEVICE_STATE_ACTIVATED:
-//		script = nm_setting_actions_get_connect_script(settings);
-
 		// If network drives are configured to be automounted, mount them
 		for (i = 0; i < nm_setting_resources_get_num_network_drives(settings_resources); i++)
 		{
@@ -1405,8 +1397,6 @@ wireless_device_state_changed (NMDevice *device,
 		}
 		break;
 	case NM_DEVICE_STATE_DISCONNECTED:
-//		script = nm_setting_actions_get_disconnect_script(settings);
-
 		// If network drives are configured to be automounted, unmount them
 		applet->disconnecting = TRUE;
 		for (i = 0; i < nm_setting_resources_get_num_network_drives(settings_resources); i++)
@@ -1451,14 +1441,6 @@ wireless_device_state_changed (NMDevice *device,
 		break;
 	default:
 		break;
-	}
-
-	// If user script configured, run it
-	if (script && strlen(script))
-	{
-		cmdline = g_strdup_printf("%s '%s'", script, connection_id);
-		system(cmdline);
-		g_free (cmdline);
 	}
 }
 
