@@ -3686,27 +3686,30 @@ mount_added_cb (GVolumeMonitor *volume_monitor,
 		NMActiveConnection *active =
 				NM_ACTIVE_CONNECTION (g_ptr_array_index (active_list, i));
 		NMConnection *connection =
-				applet_get_connection_for_active(applet, active);
+				applet_get_connection_for_active (applet, active);
 		NMSettingResources *settings =
-				nm_connection_get_setting_resources(connection);
+				nm_connection_get_setting_resources (connection);
 
-		// FIXME: Only list supported connections (e.g. with known secret settings' names)
+		// Only check supported connection types (e.g. configuring without
+		// messing secrets; supported in connection editor etc.)
+		if (!nm_connection_is_type (connection, NM_SETTING_WIRELESS_SETTING_NAME))
+			continue;
 
 		// Filter out if this mount is already configured for this connection
-		if (NM_IS_SETTING_RESOURCES(settings))
+		if (NM_IS_SETTING_RESOURCES (settings))
 		{
-			if (nm_setting_resources_has_network_drive(settings, uri))
+			if (nm_setting_resources_has_network_drive (settings, uri))
 			{
 				g_debug("%s is already known on current active network %s; "
 						"not asking for automount",
-						uri, nm_connection_get_id(connection));
+						uri, nm_connection_get_id (connection));
 				continue;
 			}
 		}
 		else
 		{
 			g_debug("Connection %s does not have any resources (for auto-mounting) configured",
-					nm_connection_get_id(connection));
+					nm_connection_get_id (connection));
 		}
 
 		// TODO IF VPN IS SUPPORTED: Filter out if this mount is already on *any* connection
@@ -3855,14 +3858,19 @@ mount_removed_cb (GVolumeMonitor *volume_monitor,
 		NMActiveConnection *active =
 				NM_ACTIVE_CONNECTION (g_ptr_array_index (active_list, i));
 		NMConnection *connection =
-				applet_get_connection_for_active(applet, active);
+				applet_get_connection_for_active (applet, active);
 		NMSettingResources *settings =
-				nm_connection_get_setting_resources(connection);
+				nm_connection_get_setting_resources (connection);
+
+		// Only check supported connection types (e.g. configuring without
+		// messing secrets; supported in connection editor etc.)
+		if (!nm_connection_is_type (connection, NM_SETTING_WIRELESS_SETTING_NAME))
+			continue;
 
 		// Filter out if this mount is already configured for this connection
-		if (NM_IS_SETTING_RESOURCES(settings))
+		if (NM_IS_SETTING_RESOURCES (settings))
 		{
-			if (nm_setting_resources_has_network_drive(settings, uri))
+			if (nm_setting_resources_has_network_drive (settings, uri))
 			{
 				active_networks = g_slist_append (active_networks, connection);
 			}
@@ -3877,7 +3885,6 @@ mount_removed_cb (GVolumeMonitor *volume_monitor,
 
 	// Display notification window & ask whether to always mount this share
 	// Following copy & paste from applet_do_notify, enhanced for more actions
-
 	applet_clear_notify (applet);
 	tmp = g_mount_get_name(mount);
 	if (g_slist_length(active_networks) == 1)
