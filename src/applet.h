@@ -175,6 +175,12 @@ typedef struct
 
 	/* Tracker objects for secrets requests */
 	GSList *        secrets_reqs;
+
+	// Mount-watching for auto-mount configuration dialogs
+	GVolumeMonitor* volume_monitor;
+	gulong			mount_added_handler_id;
+	gulong			mount_removed_handler_id;
+	gboolean		disconnecting;
 } NMApplet;
 
 typedef void (*AppletNewAutoConnectionCallback) (NMConnection *connection,

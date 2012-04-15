@@ -33,6 +33,7 @@
 
 #include <glib/gi18n.h>
 #include <gtk/gtk.h>
+#include <gio/gio.h>
 
 #include <nm-device.h>
 #include <nm-access-point.h>
@@ -1250,6 +1251,78 @@ update_active_ap (NMDevice *device, NMDeviceState state, NMApplet *applet)
 }
 
 static void
+mount_done_cb (GObject *object,
+               GAsyncResult *res,
+               gpointer user_data)
+{
+	gboolean succeeded;
+	GError *error = NULL;
+
+	succeeded = g_file_mount_enclosing_volume_finish (G_FILE (object), res, &error);
+	if (succeeded)
+	{
+		g_message("Auto-mounted %s", (char *) user_data);
+	} else {
+		g_warning("Error auto-mounting %s: %s", (char *) user_data, error->message);
+		g_error_free(error);
+	}
+}
+
+typedef struct
+{
+	NMApplet *applet;
+	const char *uri;
+
+	// a pointer to the unmount counter of a network disconnect event
+	int *unmount_count;
+} UnmountInfo;
+
+static gboolean
+reset_disconnecting_flag(gpointer user_data)
+{
+	UnmountInfo *unmount_info = (UnmountInfo *) user_data;
+
+	// Clear flag & memory
+	unmount_info->applet->disconnecting = FALSE;
+	g_free(unmount_info);
+
+	return FALSE;
+}
+
+static void
+unmount_done_cb (GObject *object,
+               GAsyncResult *res,
+               gpointer user_data)
+{
+	gboolean succeeded;
+	GError *error = NULL;
+	UnmountInfo *unmount_info = (UnmountInfo *) user_data;
+
+	// Finish unmount of this network drive
+	succeeded = g_mount_unmount_with_operation_finish (G_MOUNT (object), res, &error);
+	if (succeeded)
+	{
+		g_message("Auto-unmounted %s", unmount_info->uri);
+	} else {
+		g_warning("Error auto-unmounting %s: %s", unmount_info->uri, error->message);
+		g_error_free(error);
+	}
+
+	// Do housekeeping for outstanding unmounts
+	*unmount_info->unmount_count = *unmount_info->unmount_count - 1;
+	if (*unmount_info->unmount_count == 0)
+	{
+		g_free(unmount_info->unmount_count);
+
+		// Wait 10 seconds before reacting to unmount events - callbacks to
+		// the applet could take a while
+		g_timeout_add(
+				10 * 1000, reset_disconnecting_flag,
+				(gpointer) unmount_info);
+	}
+}
+
+static void
 wireless_device_state_changed (NMDevice *device,
                                NMDeviceState new_state,
                                NMDeviceState old_state,
@@ -1259,43 +1332,122 @@ wireless_device_state_changed (NMDevice *device,
 	NMAccessPoint *new = NULL;
 	char *msg = NULL;
 	NMRemoteConnection *connection = NULL;
-	NMSettingActions *settings = NULL;
-	const char *connection_id;
+//	NMSettingActions *settings = NULL;
+	NMSettingResources *settings_resources = NULL;
+	const char *connection_id = NULL;
 	const char *script = NULL;
 	char *cmdline = NULL;
+	int i, *unmount_count = NULL;
 
 	// Get connection info before updating device, to get it also when disconnected
 	connection = applet_get_exported_connection_for_device (NM_DEVICE (device), applet);
+
+	new = update_active_ap (device, new_state, applet);
+
 	if (connection)
 	{
 		connection_id = nm_connection_get_id(&connection->parent);
+		msg = g_strdup_printf (_("You are now connected to %s"), connection_id);
 
-		settings = nm_connection_get_setting_actions(&connection->parent);
+//		settings = nm_connection_get_setting_actions(&connection->parent);
+		settings_resources = nm_connection_get_setting_resources(&connection->parent);
 	}
-
-	new = update_active_ap (device, new_state, applet);
+	else
+	{
+		connection_id = get_ssid_utf8 (new);
+		msg = g_strdup_printf (_("You are now connected to the wireless network %s"), connection_id);
+	}
 
 	// Notify when connected
 	if (connection_id && (new_state == NM_DEVICE_STATE_ACTIVATED))
 	{
-		msg = g_strdup_printf (_("You are now connected to the wireless network %s"), connection_id);
 		applet_do_notify_with_pref (applet, _("Connection Established"),
 									msg, "nm-device-wireless",
 									PREF_DISABLE_CONNECTED_NOTIFICATIONS);
 		g_free (msg);
 	}
 
-	if (!settings)
+	// If the connection does not have resources, we're done here
+	if (!NM_IS_SETTING_RESOURCES(settings_resources))
 		return;
 
 	// Get user scripts (and in the future possibly call global event handlers, also for libnotify)
+	// FIXME: Trigger a global signal for resource connection after discussing on mailing list
 	switch (new_state)
 	{
 	case NM_DEVICE_STATE_ACTIVATED:
-		script = nm_setting_actions_get_connect_script(settings);
+//		script = nm_setting_actions_get_connect_script(settings);
+
+		// If network drives are configured to be automounted, mount them
+		for (i = 0; i < nm_setting_resources_get_num_network_drives(settings_resources); i++)
+		{
+			const char *network_drive = nm_setting_resources_get_network_drive(settings_resources, i);
+			GFile *file = g_file_new_for_uri(network_drive);
+			GError *error = NULL;
+
+			// Check if already mounted
+			GMount *mount = g_file_find_enclosing_mount(file, NULL, &error);
+			if (error == NULL)
+			{
+				g_debug("%s is already mounted; skipping auto-mount", network_drive);
+				g_object_unref(mount);
+				continue;
+			}
+			g_error_free(error);
+
+			// If not, auto-mount
+			g_file_mount_enclosing_volume (file,
+					0,
+					NULL,
+					NULL,
+					mount_done_cb,
+					(gpointer) network_drive);
+		}
 		break;
 	case NM_DEVICE_STATE_DISCONNECTED:
-		script = nm_setting_actions_get_disconnect_script(settings);
+//		script = nm_setting_actions_get_disconnect_script(settings);
+
+		// If network drives are configured to be automounted, unmount them
+		applet->disconnecting = TRUE;
+		for (i = 0; i < nm_setting_resources_get_num_network_drives(settings_resources); i++)
+		{
+			const char *network_drive = nm_setting_resources_get_network_drive(settings_resources, i);
+			GFile *file = g_file_new_for_uri(network_drive);
+			GError *error = NULL;
+			GMount *mount = g_file_find_enclosing_mount(file, NULL, &error);
+			UnmountInfo *unmount_info;
+
+			// Only unmount if the network drive is currently mounted
+			if (error != NULL)
+			{
+				g_debug("%s is not mounted; skipping auto-unmount", network_drive);
+				g_error_free(error);
+				g_object_unref(file);
+				continue;
+			}
+
+			// Unmount the network drive and block applet's reaction to unmount
+			// events (i.e. prevent notifications for removing auto-mounts)
+			unmount_info = g_malloc0(sizeof(UnmountInfo));
+			if (unmount_count == NULL)
+			{
+				// Allocate the unmount counter for this disconnect event
+				g_message("Network disconnected; ignoring unmount events for the next 10 seconds");
+				unmount_count = g_malloc0(sizeof(int));
+			}
+			*unmount_count = *unmount_count + 1;
+			unmount_info->applet = applet;
+			unmount_info->uri = network_drive;
+			unmount_info->unmount_count = unmount_count;
+
+			g_mount_unmount_with_operation(
+					mount,
+					G_MOUNT_UNMOUNT_NONE,
+					NULL,
+					NULL,
+					unmount_done_cb,
+					(gpointer) unmount_info);
+		}
 		break;
 	default:
 		break;
@@ -1306,7 +1458,6 @@ wireless_device_state_changed (NMDevice *device,
 	{
 		cmdline = g_strdup_printf("%s '%s'", script, connection_id);
 		system(cmdline);
-
 		g_free (cmdline);
 	}
 }

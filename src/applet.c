@@ -52,6 +52,7 @@
 #include <nm-device-wimax.h>
 #include <nm-utils.h>
 #include <nm-connection.h>
+#include <nm-remote-connection.h>
 #include <nm-vpn-connection.h>
 #include <nm-setting-connection.h>
 #include <nm-setting-wired.h>
@@ -61,6 +62,7 @@
 #include <nm-setting-cdma.h>
 #include <nm-setting-bluetooth.h>
 #include <nm-setting-vpn.h>
+#include <nm-setting-resources.h>
 #include <nm-active-connection.h>
 #include <nm-secret-agent.h>
 
@@ -3447,6 +3449,13 @@ static void finalize (GObject *object)
 {
 	NMApplet *applet = NM_APPLET (object);
 
+	// Disconnect & free volume monitoring
+	g_signal_handler_disconnect(applet->volume_monitor,
+			applet->mount_removed_handler_id);
+	g_signal_handler_disconnect(applet->volume_monitor,
+			applet->mount_added_handler_id);
+	g_object_unref(applet->volume_monitor);
+
 	g_slice_free (NMADeviceClass, applet->wired_class);
 	g_slice_free (NMADeviceClass, applet->wifi_class);
 	g_slice_free (NMADeviceClass, applet->gsm_class);
@@ -3512,6 +3521,409 @@ static void finalize (GObject *object)
 	G_OBJECT_CLASS (nma_parent_class)->finalize (object);
 }
 
+/**
+ * @user_data the uri of the network drive
+ */
+static void
+commit_changes_cb (NMRemoteConnection *connection,
+                                              GError *error,
+                                              gpointer user_data)
+{
+	// Clear secrets from memory
+	nm_setting_clear_secrets ( NM_SETTING (
+			nm_connection_get_setting_wireless_security(&connection->parent)));
+
+	if (error == NULL)
+	{
+		g_message("Changed auto-mounting for %s with connection %s",
+				(char*) user_data, nm_connection_get_id(&connection->parent));
+	}
+	else
+	{
+		g_warning("Failed to change auto-mounting for %s with connection %s: %s",
+				(char*) user_data, nm_connection_get_id(&connection->parent),
+				error->message);
+		g_error_free(error);
+	}
+
+	g_free(user_data);
+}
+
+/**
+ * @user_data the uri of the network drive
+ */
+static void
+get_secrets_cb (NMRemoteConnection *connection,
+                GHashTable *secrets,
+                GError *error,
+                gpointer user_data)
+{
+	GHashTable *settings, *settings_secrets;
+	GHashTableIter iter;
+	gpointer key, value;
+	NMSettingWirelessSecurity *sec;
+
+	if (error)
+	{
+		g_warning("Error getting secrets for connection %s while changing auto-mount %s for %s:",
+				nm_connection_get_id(&connection->parent),
+				(char *) user_data,
+				error->message);
+		g_free(user_data);
+		return;
+	}
+
+	// Merge wireless security settings with acquired secrets
+	settings = nm_connection_to_hash (&connection->parent,
+			NM_SETTING_HASH_FLAG_ALL);
+	settings = g_hash_table_lookup(settings, NM_SETTING_WIRELESS_SECURITY_SETTING_NAME);
+	settings_secrets = g_hash_table_lookup(secrets, NM_SETTING_WIRELESS_SECURITY_SETTING_NAME);
+	g_hash_table_iter_init (&iter, settings_secrets);
+	while (g_hash_table_iter_next (&iter, &key, &value))
+	{
+		if (g_hash_table_lookup(settings, key) != NULL) continue;
+		g_hash_table_insert (settings, key, value);
+	}
+
+	// Re-add merged settings to connection
+	sec = NM_SETTING_WIRELESS_SECURITY (nm_setting_new_from_hash(NM_TYPE_SETTING_WIRELESS_SECURITY, settings));
+	nm_connection_add_setting(&connection->parent, NM_SETTING(sec));
+
+	// Commit settings
+	nm_remote_connection_commit_changes(NM_REMOTE_CONNECTION (connection),
+			commit_changes_cb, user_data);
+}
+
+static void
+autoconnect_cb (NotifyNotification *notify,
+			                 gchar *id,
+			                 gpointer user_data)
+{
+	NMConnection *connection = NM_CONNECTION(user_data);
+	NMSettingResources *setting =
+			nm_connection_get_setting_resources (connection);
+
+	// Assure connection has resources settings
+	if (!NM_IS_SETTING_RESOURCES(setting))
+	{
+		setting = NM_SETTING_RESOURCES (nm_setting_resources_new ());
+		nm_connection_add_setting (connection, NM_SETTING (setting));
+	}
+
+	// Add to connection's automount list
+	if (!nm_setting_resources_add_network_drive(setting, id))
+	{
+		g_error("Failed to add auto-mounting for %s with connection %s",
+				id, nm_connection_get_id(connection));
+		return;
+	}
+
+	// Secrets need to be acquired & explicitly re-added to the connection
+	// so they don't get lost
+	// The g_strdup(id) is required as id is free'd for some reason
+	// TODO: Not just wireless / only wireless if the connection is wireless
+	nm_remote_connection_get_secrets (NM_REMOTE_CONNECTION (connection),
+									  NM_SETTING_WIRELESS_SECURITY_SETTING_NAME,
+	                                  get_secrets_cb,
+									  (gpointer) g_strdup(id));
+}
+
+static void
+mount_added_cb (GVolumeMonitor *volume_monitor,
+        GMount         *mount,
+        gpointer        user_data)
+{
+	NotifyNotification *notify;
+	GError *error = NULL;
+	char *escaped;
+	NMApplet *applet = NM_APPLET (user_data);
+	gboolean is_network_scheme = FALSE;
+	const char **allowed_schemes;
+	GSList *iter;
+	char *scheme, *uri, *tmp;
+	GFile *file;
+	GSList *active_networks = NULL;
+	const GPtrArray *active_list;
+	int i;
+
+	// Only continue if notification server allows actions,
+	// as the notification window is pointless otherwise
+	g_return_if_fail (applet != NULL);
+	g_return_if_fail (applet_notify_server_has_actions ());
+	g_return_if_fail (gtk_status_icon_is_embedded (applet->status_icon));
+
+    // Only continue with mounts that are auto-mountable
+    i = 0;
+	allowed_schemes = nm_setting_resources_get_allowed_schemes();
+	scheme = g_file_get_uri_scheme(g_mount_get_default_location(mount));
+	while ((!is_network_scheme) &&
+			(scheme != NULL) &&
+			(allowed_schemes[i] != NULL))
+	{
+		if (strcasecmp (allowed_schemes[i], scheme) == 0)
+			is_network_scheme = TRUE;
+		i++;
+	}
+	if (!is_network_scheme) return;
+
+	// Clean uri from trailing slash
+	file = g_mount_get_default_location(mount);
+	uri = g_file_get_uri(file);
+	if (g_str_has_suffix(uri, "/"))
+	{
+		tmp = g_strndup(uri, strlen(uri) - 1);
+		g_free(uri);
+		uri = tmp;
+	}
+	g_object_unref(file);
+
+    // Create list of active network connections to choose from in
+	// notification popup
+    // TODO: Check if this works with active VPN connections
+	active_list = nm_client_get_active_connections (applet->nm_client);
+	for (i = 0; active_list && (i < active_list->len); i++) {
+		NMActiveConnection *active =
+				NM_ACTIVE_CONNECTION (g_ptr_array_index (active_list, i));
+		NMConnection *connection =
+				applet_get_connection_for_active(applet, active);
+		NMSettingResources *settings =
+				nm_connection_get_setting_resources(connection);
+
+	    // Filter out if this mount is already configured for this connection
+		if (NM_IS_SETTING_RESOURCES(settings))
+		{
+			if (nm_setting_resources_has_network_drive(settings, uri))
+			{
+				g_debug("%s is already known on current active network %s; "
+						"not asking for automount",
+						uri, nm_connection_get_id(connection));
+				continue;
+			}
+		}
+		else
+		{
+			g_debug("Connection %s does not have any resources (for auto-mounting) configured",
+					nm_connection_get_id(connection));
+		}
+
+		// TODO IF VPN IS SUPPORTED: Filter out if this mount is already on *any* connection
+
+		active_networks = g_slist_append (active_networks, connection);
+	}
+
+	if (!active_networks)
+	{
+		g_free(uri);
+		return;
+	}
+
+    // Display notification window & ask whether to always mount this share
+    // Following based on applet_do_notify, but enhanced for more than one action
+	applet_clear_notify (applet);
+	if (g_slist_length(active_networks) == 1)
+		escaped = utils_escape_notify_message (g_strdup_printf(
+				_("Do you want to mount %s automatically when connected to %s?"),
+				uri, nm_connection_get_id((NMConnection *) g_slist_nth_data(active_networks, 0))));
+	else
+		escaped = utils_escape_notify_message (g_strdup_printf(
+				_("Do you want to mount %s automatically?"), uri));
+	notify = notify_notification_new (_("Mount automatically?"),
+	                                  escaped,
+	                                  "nm-device-wired"
+#if HAVE_LIBNOTIFY_07
+	                                  );
+#else
+	                                  , NULL);
+#endif
+	g_free (escaped);
+	applet->notification = notify;
+
+#if HAVE_LIBNOTIFY_07
+	notify_notification_set_hint (notify, "transient", g_variant_new_boolean (TRUE));
+#else
+	notify_notification_attach_to_status_icon (notify, applet->status_icon);
+#endif
+	notify_notification_set_urgency (notify, NOTIFY_URGENCY_LOW);
+	notify_notification_set_timeout (notify, NOTIFY_EXPIRES_DEFAULT);
+
+	// Add active networks to choose from
+	for (iter = active_networks; iter; iter = g_slist_next (iter)) {
+		NMConnection *connection = NM_CONNECTION(iter->data);
+
+		notify_notification_add_action (
+				notify,
+				uri,
+				(g_slist_length(active_networks) == 1) ?
+						"Connect automatically" :
+						g_strdup_printf ("On %s", nm_connection_get_id(connection)),
+				autoconnect_cb,
+				connection,
+				NULL);
+	}
+	g_slist_free(active_networks);
+
+	if (!notify_notification_show (notify, &error)) {
+		g_warning ("Failed to show notification: %s",
+		           error && error->message ? error->message : "(unknown)");
+		g_clear_error (&error);
+		g_free(uri);
+	}
+}
+
+
+static void
+remove_autoconnect_cb (NotifyNotification *notify,
+			                 gchar *id,
+			                 gpointer user_data)
+{
+	NMConnection *connection = NM_CONNECTION(user_data);
+	NMSettingResources *setting =
+			nm_connection_get_setting_resources (connection);
+
+	// Assure connection has resources settings
+	if (!NM_IS_SETTING_RESOURCES(setting))
+	{
+		setting = NM_SETTING_RESOURCES (nm_setting_resources_new ());
+		nm_connection_add_setting (connection, NM_SETTING (setting));
+	}
+
+	// Remove from connection's automount list
+	nm_setting_resources_remove_network_drive_by_uri(setting, id);
+
+	// Secrets need to be acquired & explicitly re-added to the connection
+	// so they don't get lost
+	// TODO: Not just wireless / only wireless if the connection is wireless
+	nm_remote_connection_get_secrets (NM_REMOTE_CONNECTION (connection),
+									  NM_SETTING_WIRELESS_SECURITY_SETTING_NAME,
+	                                  get_secrets_cb,
+	                                  (gpointer) g_strdup(id));
+}
+
+static void
+mount_removed_cb (GVolumeMonitor *volume_monitor,
+        GMount         *mount,
+        gpointer        user_data)
+{
+	NotifyNotification *notify;
+	GError *error = NULL;
+	char *escaped;
+	NMApplet *applet = NM_APPLET (user_data);
+	GSList *iter;
+	char *uri, *tmp;
+	GFile *file;
+	GSList *active_networks = NULL;
+	const GPtrArray *active_list;
+	int i;
+
+	// Only continue if notification server allows actions,
+	// as the notification window is pointless otherwise
+	g_return_if_fail (applet != NULL);
+	g_return_if_fail (applet_notify_server_has_actions ());
+	g_return_if_fail (gtk_status_icon_is_embedded (applet->status_icon));
+
+	// Clean uri
+	file = g_mount_get_default_location(mount);
+	uri = g_file_get_uri(file);
+	if (g_str_has_suffix(uri, "/"))
+	{
+		tmp = g_strndup(uri, strlen(uri) - 1);
+		g_free(uri);
+		uri = tmp;
+	}
+	g_object_unref(file);
+
+	// Only continue if unmount was caused by disconnection
+	if (applet->disconnecting)
+	{
+		g_debug("Network is disconnecting; not reacting to unmount of %s", uri);
+		g_free(uri);
+		return;
+	}
+
+    // Create list of active network connections that have this connection
+	// in their auto-mount lists
+    // TODO: Check if this works with active VPN connections
+	active_list = nm_client_get_active_connections (applet->nm_client);
+	for (i = 0; active_list && (i < active_list->len); i++) {
+		NMActiveConnection *active =
+				NM_ACTIVE_CONNECTION (g_ptr_array_index (active_list, i));
+		NMConnection *connection =
+				applet_get_connection_for_active(applet, active);
+		NMSettingResources *settings =
+				nm_connection_get_setting_resources(connection);
+
+	    // Filter out if this mount is already configured for this connection
+		if (NM_IS_SETTING_RESOURCES(settings))
+		{
+			if (nm_setting_resources_has_network_drive(settings, uri))
+			{
+				active_networks = g_slist_append (active_networks, connection);
+			}
+		}
+	}
+
+	if (!active_networks)
+	{
+		g_free(uri);
+		return;
+	}
+
+    // Display notification window & ask whether to always mount this share
+    // Following copy & paste from applet_do_notify, enhanced for more actions
+
+	applet_clear_notify (applet);
+
+	if (g_slist_length(active_networks) == 1)
+		escaped = utils_escape_notify_message (g_strdup_printf(
+				_("You just unmounted %s, which is auto-mounted when you connect to %s."),
+				uri, nm_connection_get_id((NMConnection *) g_slist_nth_data(active_networks, 0))));
+	else
+		escaped = utils_escape_notify_message (g_strdup_printf(
+				_("You just unmounted %s, which is auto-mounted. Do you want to remove auto-mounting?"),
+				uri));
+	notify = notify_notification_new (_("Also remove auto-mounting?"),
+	                                  escaped,
+	                                  "nm-device-wired"
+#if HAVE_LIBNOTIFY_07
+	                                  );
+#else
+	                                  , NULL);
+#endif
+	g_free (escaped);
+	applet->notification = notify;
+
+#if HAVE_LIBNOTIFY_07
+	notify_notification_set_hint (notify, "transient", g_variant_new_boolean (TRUE));
+#else
+	notify_notification_attach_to_status_icon (notify, applet->status_icon);
+#endif
+	notify_notification_set_urgency (notify, NOTIFY_URGENCY_LOW);
+	notify_notification_set_timeout (notify, NOTIFY_EXPIRES_DEFAULT);
+
+	// Add active networks to choose from
+	for (iter = active_networks; iter; iter = g_slist_next (iter)) {
+		NMConnection *connection = NM_CONNECTION(iter->data);
+
+		notify_notification_add_action (
+				notify,
+				uri,
+				(g_slist_length(active_networks) == 1) ?
+						"Remove auto-mount" :
+						g_strdup_printf ("On %s", nm_connection_get_id(connection)),
+				remove_autoconnect_cb,
+				connection,
+				NULL);
+	}
+	g_slist_free(active_networks);
+
+	if (!notify_notification_show (notify, &error)) {
+		g_warning ("Failed to show notification: %s",
+		           error && error->message ? error->message : "(unknown)");
+		g_clear_error (&error);
+		g_free(uri);
+	}
+}
+
 static void nma_init (NMApplet *applet)
 {
 	applet->animation_id = 0;
@@ -3519,6 +3931,18 @@ static void nma_init (NMApplet *applet)
 	applet->icon_theme = NULL;
 	applet->notification = NULL;
 	applet->icon_size = 16;
+
+	// Connect volume monitoring
+	applet->volume_monitor = g_volume_monitor_get();
+	applet->mount_added_handler_id = g_signal_connect_after (applet->volume_monitor,
+	                  "mount-added",
+	                  G_CALLBACK (mount_added_cb),
+	                  applet);
+	applet->mount_removed_handler_id = g_signal_connect_after (applet->volume_monitor,
+	                  "mount-removed",
+	                  G_CALLBACK (mount_removed_cb),
+	                  applet);
+	applet->disconnecting = FALSE;
 }
 
 enum {

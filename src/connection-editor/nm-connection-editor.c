@@ -28,6 +28,7 @@
 #include <string.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <stdlib.h>
 
 #include <gtk/gtk.h>
 #include <gdk/gdkx.h>
@@ -62,6 +63,7 @@
 #include "page-dsl.h"
 #include "page-mobile.h"
 #include "page-ppp.h"
+#include "page-resources.h"
 #include "page-vpn.h"
 #include "page-actions.h"
 #include "ce-polkit-button.h"
@@ -300,6 +302,8 @@ nm_connection_editor_init (NMConnectionEditor *editor)
 	editor->cancel_button = GTK_WIDGET (gtk_builder_get_object (editor->builder, "cancel_button"));
 	editor->all_checkbutton = GTK_WIDGET (gtk_builder_get_object (editor->builder, "system_checkbutton"));
 }
+
+
 
 static void
 get_secrets_info_free (GetSecretsInfo *info)
@@ -751,6 +755,8 @@ nm_connection_editor_set_connection (NMConnectionEditor *editor,
 		if (!add_page (editor, ce_page_ip6_new, editor->connection, error))
 			goto out;
 		if (!add_page (editor, ce_page_actions_new, editor->connection, error))
+			goto out;
+		if (!add_page (editor, ce_page_resources_new, editor->connection, error))
 			goto out;
 	} else if (!strcmp (connection_type, NM_SETTING_VPN_SETTING_NAME)) {
 		if (!add_page (editor, ce_page_vpn_new, editor->connection, error))
