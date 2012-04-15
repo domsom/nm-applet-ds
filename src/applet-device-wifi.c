@@ -28,8 +28,6 @@
 #include <arpa/inet.h>
 #include <netinet/ether.h>
 #include <ctype.h>
-#include <stdlib.h>
-#include <unistd.h>
 
 #include <glib/gi18n.h>
 #include <gtk/gtk.h>
@@ -39,7 +37,6 @@
 #include <nm-access-point.h>
 #include <nm-setting-connection.h>
 #include <nm-setting-wireless.h>
-#include <nm-setting-actions.h>
 #include <nm-device-wifi.h>
 #include <nm-setting-8021x.h>
 #include <nm-utils.h>
@@ -934,9 +931,7 @@ notify_active_ap_changed_cb (NMDeviceWifi *device,
 
 	connection = applet_get_exported_connection_for_device (NM_DEVICE (device), applet);
 	if (!connection)
-	{
 		return;
-	}
 
 	s_wireless = nm_connection_get_setting_wireless (NM_CONNECTION (connection));
 	if (!s_wireless)
@@ -1330,7 +1325,7 @@ wireless_device_state_changed (NMDevice *device,
                                NMApplet *applet)
 {
 	NMAccessPoint *new = NULL;
-	char *msg = NULL;
+	char *msg;
 	NMRemoteConnection *connection = NULL;
 	NMSettingResources *settings_resources = NULL;
 	const char *connection_id = NULL;
@@ -1340,6 +1335,9 @@ wireless_device_state_changed (NMDevice *device,
 	connection = applet_get_exported_connection_for_device (NM_DEVICE (device), applet);
 
 	new = update_active_ap (device, new_state, applet);
+
+	if (new_state == NM_DEVICE_STATE_DISCONNECTED)
+		queue_avail_access_point_notification (device);
 
 	if (connection)
 	{

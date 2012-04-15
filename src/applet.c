@@ -3622,10 +3622,11 @@ autoconnect_cb (NotifyNotification *notify,
 	// so they don't get lost
 	// The g_strdup(id) is required as id is free'd for some reason
 	// TODO: Not just wireless / only wireless if the connection is wireless
-	nm_remote_connection_get_secrets (NM_REMOTE_CONNECTION (connection),
-									  NM_SETTING_WIRELESS_SECURITY_SETTING_NAME,
-	                                  get_secrets_cb,
-									  (gpointer) g_strdup(id));
+	nm_remote_connection_get_secrets (
+			NM_REMOTE_CONNECTION (connection),
+			NM_SETTING_WIRELESS_SECURITY_SETTING_NAME,
+			get_secrets_cb,
+			(gpointer) g_strdup(id));
 }
 
 static void
@@ -3652,8 +3653,8 @@ mount_added_cb (GVolumeMonitor *volume_monitor,
 	g_return_if_fail (applet_notify_server_has_actions ());
 	g_return_if_fail (gtk_status_icon_is_embedded (applet->status_icon));
 
-    // Only continue with mounts that are auto-mountable
-    i = 0;
+	// Only continue with mounts that are auto-mountable
+	i = 0;
 	allowed_schemes = nm_setting_resources_get_allowed_schemes();
 	scheme = g_file_get_uri_scheme(g_mount_get_default_location(mount));
 	while ((!is_network_scheme) &&
@@ -3677,9 +3678,9 @@ mount_added_cb (GVolumeMonitor *volume_monitor,
 	}
 	g_object_unref(file);
 
-    // Create list of active network connections to choose from in
+	// Create list of active network connections to choose from in
 	// notification popup
-    // TODO: Check if this works with active VPN connections
+	// TODO: Check if this works with active VPN connections
 	active_list = nm_client_get_active_connections (applet->nm_client);
 	for (i = 0; active_list && (i < active_list->len); i++) {
 		NMActiveConnection *active =
@@ -3691,7 +3692,7 @@ mount_added_cb (GVolumeMonitor *volume_monitor,
 
 		// FIXME: Only list supported connections (e.g. with known secret settings' names)
 
-	    // Filter out if this mount is already configured for this connection
+		// Filter out if this mount is already configured for this connection
 		if (NM_IS_SETTING_RESOURCES(settings))
 		{
 			if (nm_setting_resources_has_network_drive(settings, uri))
@@ -3719,8 +3720,8 @@ mount_added_cb (GVolumeMonitor *volume_monitor,
 		return;
 	}
 
-    // Display notification window & ask whether to always mount this share
-    // Following based on applet_do_notify, but enhanced for more than one action
+	// Display notification window & ask whether to always mount this share
+	// Following based on applet_do_notify, but enhanced for more than one action
 	applet_clear_notify (applet);
 	tmp = g_mount_get_name(mount);
 	if (g_slist_length(active_networks) == 1)
@@ -3800,9 +3801,9 @@ remove_autoconnect_cb (NotifyNotification *notify,
 	// so they don't get lost
 	// TODO: Not just wireless / only wireless if the connection is wireless
 	nm_remote_connection_get_secrets (NM_REMOTE_CONNECTION (connection),
-									  NM_SETTING_WIRELESS_SECURITY_SETTING_NAME,
-	                                  get_secrets_cb,
-	                                  (gpointer) g_strdup(id));
+			NM_SETTING_WIRELESS_SECURITY_SETTING_NAME,
+			get_secrets_cb,
+			(gpointer) g_strdup(id));
 }
 
 static void
@@ -3846,9 +3847,9 @@ mount_removed_cb (GVolumeMonitor *volume_monitor,
 		return;
 	}
 
-    // Create list of active network connections that have this connection
+	// Create list of active network connections that have this connection
 	// in their auto-mount lists
-    // TODO: Check if this works with active VPN connections
+	// TODO: Check if this works with active VPN connections
 	active_list = nm_client_get_active_connections (applet->nm_client);
 	for (i = 0; active_list && (i < active_list->len); i++) {
 		NMActiveConnection *active =
@@ -3858,7 +3859,7 @@ mount_removed_cb (GVolumeMonitor *volume_monitor,
 		NMSettingResources *settings =
 				nm_connection_get_setting_resources(connection);
 
-	    // Filter out if this mount is already configured for this connection
+		// Filter out if this mount is already configured for this connection
 		if (NM_IS_SETTING_RESOURCES(settings))
 		{
 			if (nm_setting_resources_has_network_drive(settings, uri))
@@ -3874,19 +3875,19 @@ mount_removed_cb (GVolumeMonitor *volume_monitor,
 		return;
 	}
 
-    // Display notification window & ask whether to always mount this share
-    // Following copy & paste from applet_do_notify, enhanced for more actions
+	// Display notification window & ask whether to always mount this share
+	// Following copy & paste from applet_do_notify, enhanced for more actions
 
 	applet_clear_notify (applet);
-
+	tmp = g_mount_get_name(mount);
 	if (g_slist_length(active_networks) == 1)
 		escaped = utils_escape_notify_message (g_strdup_printf(
 				_("You just unmounted\n%s\nDo you want to remove auto-mounting for\n%s?"),
-				uri, nm_connection_get_id((NMConnection *) g_slist_nth_data(active_networks, 0))));
+				tmp, nm_connection_get_id((NMConnection *) g_slist_nth_data(active_networks, 0))));
 	else
 		escaped = utils_escape_notify_message (g_strdup_printf(
 				_("You just unmounted\n%s\nDo you want to remove auto-mounting?"),
-				uri));
+				tmp));
 	notify = notify_notification_new (_("Also remove auto-mounting?"),
 	                                  escaped,
 	                                  "nm-device-wired"
@@ -3895,6 +3896,7 @@ mount_removed_cb (GVolumeMonitor *volume_monitor,
 #else
 	                                  , NULL);
 #endif
+	g_free (tmp);
 	g_free (escaped);
 	applet->notification = notify;
 
@@ -3940,14 +3942,16 @@ static void nma_init (NMApplet *applet)
 
 	// Connect volume monitoring
 	applet->volume_monitor = g_volume_monitor_get();
-	applet->mount_added_handler_id = g_signal_connect_after (applet->volume_monitor,
-	                  "mount-added",
-	                  G_CALLBACK (mount_added_cb),
-	                  applet);
-	applet->mount_removed_handler_id = g_signal_connect_after (applet->volume_monitor,
-	                  "mount-removed",
-	                  G_CALLBACK (mount_removed_cb),
-	                  applet);
+	applet->mount_added_handler_id = g_signal_connect_after (
+			applet->volume_monitor,
+			"mount-added",
+			G_CALLBACK (mount_added_cb),
+			applet);
+	applet->mount_removed_handler_id = g_signal_connect_after (
+			applet->volume_monitor,
+			"mount-removed",
+			G_CALLBACK (mount_removed_cb),
+			applet);
 	applet->disconnecting = FALSE;
 }
 

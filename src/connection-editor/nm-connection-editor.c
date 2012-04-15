@@ -28,7 +28,6 @@
 #include <string.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <stdlib.h>
 
 #include <gtk/gtk.h>
 #include <gdk/gdkx.h>
@@ -301,8 +300,6 @@ nm_connection_editor_init (NMConnectionEditor *editor)
 	editor->cancel_button = GTK_WIDGET (gtk_builder_get_object (editor->builder, "cancel_button"));
 	editor->all_checkbutton = GTK_WIDGET (gtk_builder_get_object (editor->builder, "system_checkbutton"));
 }
-
-
 
 static void
 get_secrets_info_free (GetSecretsInfo *info)
